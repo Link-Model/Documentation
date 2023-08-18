@@ -1,0 +1,411 @@
+\documentclass[12pt]{article}
+
+\usepackage{tabularx}
+\usepackage[table]{xcolor}
+\usepackage[hidelinks, bookmarks]{hyperref}
+
+\setlength\parindent{0pt}
+\setlength\parskip{8pt}
+
+\newcommand{\mytablestart}[2]{
+  \vspace{8pt}
+  \noindent
+  \tabularx{\textwidth}{|l|X|}
+  \hline
+  \cellcolor{gray!25}#1 & \cellcolor{gray!25}#2 \\
+  \hline
+}
+
+\newcommand{\mytableend}{
+  \endtabularx
+  \vspace{8pt}
+}
+
+\newenvironment{mytable}[2]{
+  \mytablestart{#1}{#2}
+}{
+  \mytableend{}
+}
+
+\newenvironment{register}{
+  \mytablestart{Bits}{Description}
+}{
+  \mytableend
+}
+
+\newenvironment{enum}{
+  \mytablestart{Value}{Description}
+}{
+  \mytableend
+}
+
+\newcommand{\row}[2]{
+  #1 & #2 \\
+  \hline
+}
+
+\newcommand{\props}[2]{
+  \begin{description}
+    \setlength{\itemsep}{0pt}
+    \item[DLC:] #1
+    \item[Vehicle/End:] #2
+  \end{description}
+}
+
+\title{Link Light Rail Model CAN API}
+\author{Cameron Devine}
+\date\today
+
+\begin{document}
+
+\maketitle
+
+\newpage
+
+\tableofcontents
+
+\newpage
+
+\section{Introduction}
+
+This document describes the CAN API used by multiple Link Light Rail model vehicles to communicate amongst each other, and between the various modules of each vehicle, which all utilize a common CAN bus.
+While there are various modules of different types, the main two types are the IO boards at each end of the vehicle which interface with the motors and other hardware, and the controllers used as the primary human interface device.
+At any time, no more than one controller may be ``active''.
+The IO boards and the active controller are considered the ``critical modules''.
+These modules are those where failures could result in a dangerous condition.
+
+The standard size 11 bit CAN message IDs are used.
+To organize the message IDs, they are split into several different fields.
+The ID of each vehicle and the corresponding end of the vehicle is can also be encoded into each message ID.
+This is arranged as follows:
+
+\begin{register}
+  \row{10:8}{Message Category}
+  \row{7:5}{Message ID}
+  \row{4:2}{Vehicle ID}
+  \row{1:0}{Vehicle End}
+\end{register}
+
+The categories are as follows:
+
+\begin{mytable}{Value}{Category}
+  \row{0}{Emergency}
+  \row{1}{Motor}
+  \row{2}{Brake}
+  \row{3}{Sound}
+  \row{4}{Management}
+  \row{5}{Lights}
+  \row{6}{Animatronics}
+  \row{7}{Telemetry}
+\end{mytable}
+
+The vehicle value is the ID of the specific vehicle ranging from 1 to 7.
+Depending on the specific message, this can be either the destination or the source of the message.
+A vehicle value of 0 specifies that the message should be received by all vehicles.
+
+The end value specifies the end of the vehicle that the message is either sent from, or destined for.
+The values correspond to the following:
+
+\begin{enum}
+  \row{0}{Broadcast to both ends}
+  \row{1}{Front}
+  \row{2}{Back}
+\end{enum}
+
+\section{Emergency Messages}
+
+Messages in this category are for emergency use and are of the highest priority.
+
+\subsection{0: Stop}
+
+This message commands all vehicles to immediately stop.
+
+\props{0}{Source}
+
+\section{Motor Messages}
+
+Messages in this category are used to command the speed and direction of the motor, along with other parameters.
+
+\subsection{0: Speed}
+
+This message commands the speed and direction of the motor.
+A positive value denotes forward motion relative to the consist as a whole.
+
+\props{2}{Destination}
+
+\begin{register}
+  \row{15:0}{Motor speed command}
+\end{register}
+
+\section{Brake Messages}
+
+Reserved
+
+\section{Sound Messages}
+
+\subsection{0: Play}
+
+Start playing the sound indicated.
+Before the sound starts, any currently playing sound is stopped.
+
+\props{1}{Destination}
+
+\begin{register}
+  \row{7:0}{Sound ID}
+\end{register}
+
+\subsection{1: Stop}
+
+Stop playing the current sound.
+
+\props{0}{Destination}
+
+\subsection{2: Master Volume}
+
+Set the overall volume for all sounds.
+
+\props{1}{Destination}
+
+\begin{register}
+  \row{7:0}{Volume}
+\end{register}
+
+\subsection{3: Volume}
+
+Set the volume for a specific sound
+
+\props{2}{Destination}
+
+\begin{register}
+  \row{15:8}{Sound ID}
+  \row{7:0}{Volume}
+\end{register}
+
+\section{Management Messages}
+
+\subsection{0: State}
+
+The state of the system is considered to be the minimum state of any critical module.
+The vehicle ID and end must be set in each message.
+For the active controller, the end field must be set to 3.
+The states are:
+
+\begin{enum}
+  \row{0}{Error}
+  \row{1}{Updating}
+  \row{2}{Unconfigured}
+  \row{3}{Configuring}
+  \row{4}{Running}
+\end{enum}
+
+The state must be transmitted by each critical module no less than once per second.
+If any critical module has not received a state message from any critical module for more than 2 seconds it shall reduce the state to unconfigured.
+At any time when the state is reduced, all motors must be stopped.
+Modules are also expected to set their own state to the minimum state received when it is an allowed transition.
+If the transition is not allowed, the error state message should be transmitted.
+Transitions from any state to the error state are allowable.
+
+Each vehicle starts in the unconfigured state.
+A single controller can put the system into the configuring state.
+This makes the controller the active controller.
+Once configuration is complete using the end sense, end command, and direction messages, the active controller can change the state to running.
+Once in the running state, only the active controller may change the state back to unconfigured.
+When in the unconfigured state, any module may place the system into the updating state.
+For modules that are not an IO board or a controller use zero for the end field.
+Once the update is complete, only this module may place the system back in the unconfigured state.
+
+There is no transition from the error state to any other state.
+To clear the error state the entire system must be restarted.
+
+\props{1}{Source}
+
+\begin{register}
+  \row{7:0}{State}
+\end{register}
+
+\subsection{1: End Read}
+
+When in the configuring state, each end of each vehicle must transmit the state of its end sense connection when driven low at a rate of 10 Hz.
+
+\props{1}{Source}
+
+\begin{register}
+  \row{7:1}{Reserved}
+  \row{0}{State}
+\end{register}
+
+\subsection{2: End Command}
+
+Command the end sense connection of a specified state.
+
+\props{1}{Destination}
+
+\begin{register}
+  \row{7:1}{Reserved}
+  \row{0}{State}
+\end{register}
+
+\subsection{3: Set Option}
+
+This command is used to enable and disable different options for a given vehicle/end.
+The mask allows the settings which should be modified to be specified.
+The first option which may be set with this command is the reversed option which specifies that a specific vehicle is in the opposite direction in the consist and certain messages such as speed and door message should be reversed.
+When changing this setting, the end field must be zero.
+The second option, which can be enabled with this command is the speed enabled option.
+If this option is enabled, the speed telemetry message will be transmitted by the specified vehicle/end.
+
+\props{1}{Destination}
+
+\begin{register}
+  \row{7:6}{Reserved}
+  \row{5}{Speed enable mask}
+  \row{4}{Reversed mask}
+  \row{3:2}{Reserved}
+  \row{1}{Speed enable}
+  \row{0}{Reversed}
+\end{register}
+
+\subsection{4: Update Start}
+
+This message indicates the start of a CAN based OTA update of a module.
+The raw flash contents should be compressed using GZip so it will fit in the remaining flash storage space.
+The vehicle and end fields can be used to update only a specific module, or a subset of the modules.
+Each module type has a corresponding type ID which is necessary to set so only the correct module is updated.
+These module type IDs are as follows:
+
+\begin{enum}
+  \row{0}{IO Board}
+  \row{1}{Controller}
+  \row{2}{Destination Sign}
+\end{enum}
+
+\props{4}{Destination}
+
+\begin{register}
+  \row{31:12}{The length of the compressed update data in bytes}
+  \row{11:4}{The CRC-8 checksum of the compressed update data}
+  \row{3:0}{The module type ID to update}
+\end{register}
+
+\subsection{5: Update Data}
+
+This message includes the data for the CAN based OTA update.
+The vehicle and end fields should be set the same as in the Update Start command.
+Since the type ID is not included in this message, only a single update should be performed at a time.
+The 8 least significant bits contain an increasing count of the messages sent to ensure messages are received in order and none are missed.
+This value may overflow back to zero.
+
+\props{Variable}{Destination}
+
+\begin{register}
+  \row{N:8}{Compressed update data}
+  \row{7:0}{Update message count}
+\end{register}
+
+\subsection{6: Update Received}
+
+This message should be transmitted once all update data has been received and the update is about to take place.
+
+\props{0}{Source}
+
+\section{Lights Messages}
+
+\subsection{0: Level}
+
+Sets the brightness of one or more LEDs.
+
+\props{3}{Destination}
+
+\begin{register}
+  \row{23:20}{Reserved}
+  \row{19}{Set the interior light level}
+  \row{18}{Set the red lights level}
+  \row{17}{Set the lower headlights level}
+  \row{16}{Set the upper headlight level}
+  \row{15:0}{Brightness level}
+\end{register}
+
+\subsection{1: Flash}
+
+Set the flashing method of one or more LEDs.
+The time for the LED to be on and off can both be specified.
+To turn flashing off, set either the on time and/or off time to zero.
+
+\props{4}{Destination}
+
+\begin{register}
+  \row{31}{Set the interior light flash settings}
+  \row{30}{Set the red lights flash settings}
+  \row{29}{Set the lower headlights flash settings}
+  \row{28}{Set the upper headlight flash setting}
+  \row{27:14}{Off time (ms)}
+  \row{13:0}{On time (ms)}
+\end{register}
+
+\section{Animatronics Messages}
+
+\subsection{0: Doors}
+
+Command the doors to open or close.
+The vehicle and end fields set which vehicle(s) and end(s) the command applies to.
+This command must specify which side doors should be opened relative to the forward direction of the consist.
+This is enumerated as follows:
+
+\begin{enum}
+  \row{0}{Left}
+  \row{1}{Right}
+\end{enum}
+
+The door action must also be specified and is enumerated as follows:
+
+\begin{enum}
+  \row{0}{Close}
+  \row{1}{Open}
+\end{enum}
+
+\props{1}{Destination}
+
+\begin{register}
+  \row{7:2}{Reserved}
+  \row{1}{Door side}
+  \row{0}{Door action}
+\end{register}
+
+\subsection{1: Sign Text}
+
+Set the text displayed on the destination signs on each end of the vehicle.
+The vehicle and end fields set which vehicle(s) and end(s) the command applies to.
+The length of the text string must be set in the text length field.
+Due to the limited length of CAN messages, the full string likely will not fit in a single message.
+Therefore, the offset from the start of the string must be specified.
+The sign should not be updated until the final character has been received.
+
+\props{Variable}{Destination}
+
+\begin{register}
+  \row{N:8}{Text}
+  \row{7:4}{Offset}
+  \row{3:0}{Text length}
+\end{register}
+
+\section{Telemetry Messages}
+
+\subsection{0: Speed}
+
+The current speed of the vehicle in tenths of a mile per hour.
+
+\props{1}{Source}
+
+\begin{register}
+  \row{7:0}{Speed (tenths of a mile per hour)}
+\end{register}
+
+\subsection{1: Motor}
+
+Reserved
+
+\subsection{2: Inverter}
+
+Reserved
+
+\end{document}
